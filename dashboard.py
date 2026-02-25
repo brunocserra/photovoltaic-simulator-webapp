@@ -3,57 +3,62 @@ import plotly.graph_objects as go
 import pandas as pd
 
 def render_dashboard(resumo_mensal, df_horario):
-    # --- KPIs Superiores ---
-    st.subheader("📌 Indicadores Chave de Performance (KPIs)")
-    c1, c2, c3, c4 = st.columns(4)
+    st.header("📊 Relatório de Performance Energética")
     
-    prod_anual = resumo_mensal['producao_kwh'].sum()
-    cons_anual = resumo_mensal['consumo_casa_kwh'].sum()
-    autoconsumo = resumo_mensal['autoconsumo_kwh'].sum()
-    poupanca = resumo_mensal['valor_poupado'].sum()
-    
-    c1.metric("Produção Anual", f"{prod_anual:,.0f} kWh", help="Energia total gerada")
-    c2.metric("Independência Energética", f"{(autoconsumo/cons_anual*100):.1f} %", help="Percentagem do consumo suprido pelo solar")
-    c3.metric("Poupança Estimada", f"€ {poupanca:,.2f}", help="Redução na fatura + venda de excedente")
-    c4.metric("Taxa de Utilização", f"{(autoconsumo/prod_anual*100):.1f} %", help="Quanto da produção foi consumida localmente")
+    # --- Secção 1: KPIs ---
+    total_clipping = resumo_mensal['clipping_kwh'].sum()
+    total_prod_ac = resumo_mensal['producao_kwh'].sum()
+    total_cons = resumo_mensal['consumo_casa_kwh'].sum()
+    total_auto = resumo_mensal['autoconsumo_kwh'].sum()
+    poupanca_anual = resumo_mensal['valor_poupado'].sum()
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Produção AC Útil", f"{total_prod_ac:,.0f} kWh")
+    col2.metric("Energia Perdida (Clipping)", f"{total_clipping:,.0f} kWh", 
+                delta=f"-{total_clipping/(total_prod_ac+total_clipping)*100:.1f}% Perda", delta_color="inverse")
+    col3.metric("Autossuficiência", f"{(total_auto/total_cons*100):.1f} %")
+    col4.metric("Poupança Estimada", f"€ {poupanca_anual:,.2f}")
 
     st.markdown("---")
 
-    # --- Gráfico de Cruzamento Mensal ---
-    st.subheader("📈 Cruzamento Mensal: Produção vs Consumo")
+    # --- Secção 2: Gráficos de Barras (Mensal) ---
+    st.subheader("📈 Balanço Energético Mensal (com Clipping)")
     
-    fig = go.Figure()
-    fig.add_trace(go.Bar(
-        x=resumo_mensal['mes'], y=resumo_mensal['producao_kwh'],
-        name='Produção Solar', marker_color='#FFA500'
-    ))
-    fig.add_trace(go.Bar(
-        x=resumo_mensal['mes'], y=resumo_mensal['consumo_casa_kwh'],
-        name='Consumo Estimado', marker_color='#2E86C1'
-    ))
+    fig_mensal = go.Figure()
+    fig_mensal.add_trace(go.Bar(x=resumo_mensal['mes'], y=resumo_mensal['autoconsumo_kwh'], 
+                                name='Autoconsumo', marker_color='#27AE60'))
+    fig_mensal.add_trace(go.Bar(x=resumo_mensal['mes'], y=resumo_mensal['excedente_kwh'], 
+                                name='Excedente Rede', marker_color='#F1C40F'))
+    fig_mensal.add_trace(go.Bar(x=resumo_mensal['mes'], y=resumo_mensal['clipping_kwh'], 
+                                name='Perda Clipping', marker_color='#E74C3C'))
     
-    fig.update_layout(
-        barmode='group', 
-        xaxis_title="Mês", 
-        yaxis_title="Energia (kWh)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        margin=dict(t=0)
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    fig_mensal.update_layout(barmode='stack', xaxis_title="Mês", yaxis_title="Energia (kWh)",
+                             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    st.plotly_chart(fig_mensal, use_container_width=True)
 
-    # --- Gráfico de Balanço de Fluxos ---
-    st.subheader("🔄 Destino da Energia Gerada")
+    # --- Secção 3: Análise de Cruzamento Horário (Dia Típico) ---
+    st.subheader("🕒 Perfil de Carga vs Geração (Dia Médio de Junho)")
     
-    # Exemplo de Gráfico de Áreas para ver a cobertura
-    fig_area = go.Figure()
-    fig_area.add_trace(go.Scatter(
-        x=resumo_mensal['mes'], y=resumo_mensal['autoconsumo_kwh'],
-        fill='tozeroy', name='Autoconsumo', line_color='#27AE60'
-    ))
-    fig_area.add_trace(go.Scatter(
-        x=resumo_mensal['mes'], y=resumo_mensal['excedente_kwh'],
-        fill='tonexty', name='Excedente (Venda)', line_color='#F1C40F'
-    ))
+    # Filtrar Junho para mostrar o maior impacto solar/clipping
+    df_junho = df_horario[df_horario['mes'] == 6].groupby('hora').mean().reset_index()
     
-    fig_area.update_layout(title="Composição da Produção Mensal", xaxis_title="Mês", yaxis_title="kWh")
-    st.plotly_chart(fig_area, use_container_width=True)
+    fig_hourly = go.Figure()
+    # Área de Produção AC Útil
+    fig_hourly.add_trace(go.Scatter(x=df_junho['hora'], y=df_junho['producao_kwh'], 
+                                    name='Produção AC (Inversor)', fill='tozeroy', 
+                                    line_color='#FFA500', stackgroup='one'))
+    # Área de Clipping (o que ficou acima do inversor)
+    fig_hourly.add_trace(go.Scatter(x=df_junho['hora'], y=df_junho['clipping_kwh'], 
+                                    name='Potência Cortada (Clipping)', fill='tonexty', 
+                                    line_color='#E74C3C', stackgroup='one'))
+    # Linha de Consumo
+    fig_hourly.add_trace(go.Scatter(x=df_junho['hora'], y=df_junho['consumo_casa_kwh'], 
+                                    name='Consumo Perfil', line=dict(color='#2E86C1', width=3, dash='dash')))
+    
+    fig_hourly.update_layout(xaxis_title="Hora do Dia", yaxis_title="Potência Média (kW)",
+                             hovermode="x unified")
+    st.plotly_chart(fig_hourly, use_container_width=True)
+
+    # --- Secção 4: Tabela de Dados Brutos ---
+    with st.expander("📄 Ver Matriz de Dados Mensais"):
+        st.dataframe(resumo_mensal.style.format(precision=2), use_container_width=True)
