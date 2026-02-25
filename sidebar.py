@@ -4,19 +4,23 @@ def render_sidebar():
     with st.sidebar:
         st.header("⚙️ Configuração Técnica")
         
-        # Localização com foco nos Açores/Portugal
-        st.subheader("Localização")
-        with st.expander("Coordenadas (Lat/Lon)", expanded=False):
+        # Escolha do Perfil (Novo)
+        perfil_tipo = st.selectbox(
+            "Perfil de Consumo (ERSE)", 
+            ["A", "B", "C"], 
+            index=2,
+            help="A: Industrial/Grandes Serviços | B: Doméstico >7.1MWh | C: Doméstico Standard"
+        )
+        
+        with st.expander("🌍 Localização (Açores)", expanded=False):
             lat = st.number_input("Latitude", value=37.7400, format="%.4f")
             lon = st.number_input("Longitude", value=-25.6700, format="%.4f")
         
-        # Parâmetros do Sistema
-        st.subheader("Sistema Fotovoltaico")
-        kwp = st.number_input("Potência Instalada (kWp)", value=3.0, step=0.5, help="Potência de pico dos painéis.")
+        st.subheader("☀️ Sistema Fotovoltaico")
+        kwp = st.number_input("Potência Instalada (kWp)", value=3.0, step=0.5)
         inclination = st.slider("Inclinação (°)", 0, 90, 35)
-        azimuth = st.slider("Azimute (°)", 0, 360, 180, help="180º = Sul (Ideal)")
+        azimuth = st.slider("Azimute (°)", 0, 360, 180)
         
-        # Parâmetros Económicos e Consumo
         st.header("📊 Gestão de Energia")
         consumo_anual = st.number_input("Consumo Anual Total (kWh)", value=5000, step=100)
         
@@ -30,6 +34,7 @@ def render_sidebar():
         run_sim = st.button("🚀 Executar Simulação", type="primary", use_container_width=True)
         
         return run_sim, {
+            "perfil": perfil_tipo,
             "lat": lat, "lon": lon, "kwp": kwp, 
             "inclination": inclination, "azimuth": azimuth,
             "consumo_anual": consumo_anual, 
