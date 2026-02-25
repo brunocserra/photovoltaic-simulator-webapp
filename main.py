@@ -6,91 +6,71 @@ from sidebar import render_sidebar
 from dashboard import render_dashboard
 
 def executar_simulacao(p):
-    # Dicionário de URLs do Azure Blob Storage
-    urls = {
-        "A": "https://extincorpdfsstore.blob.core.windows.net/solenerge/perfil_consumo_A.csv",
-        "B": "https://extincorpdfsstore.blob.core.windows.net/solenerge/perfil_consumo_B.csv",
-        "C": "https://extincorpdfsstore.blob.core.windows.net/solenerge/perfil_consumo_C.csv"
-    }
+    urls = {"A": "https://extincorpdfsstore.blob.core.windows.net/solenerge/perfil_consumo_A.csv",
+            "B": "https://extincorpdfsstore.blob.core.windows.net/solenerge/perfil_consumo_B.csv",
+            "C": "https://extincorpdfsstore.blob.core.windows.net/solenerge/perfil_consumo_C.csv"}
     
-    # 1. Carregar Perfil de Consumo
-    try:
-        response = requests.get(urls[p['perfil']])
-        response.raise_for_status()
-        df_cons = pd.read_csv(io.StringIO(response.text))
-    except Exception as e:
-        st.error(f"Erro ao carregar perfil de consumo: {e}")
-        return None, None
-
-    # 2. Consultar API PVGIS
-    # Conversão de Azimute (PVGIS usa Sul=0)
-    pvgis_azim = p['azimuth'] - 180
-    pvgis_url = (f"https://re.jrc.ec.europa.eu/api/v5_2/seriescalc?"
-                 f"lat={p['lat']}&lon={p['lon']}&raddatabase=PVGIS-SARAH2&peakpower={p['kwp']}"
-                 f"&loss=14&mountingplace=free&angle={p['inclination']}&aspect={pvgis_azim}"
-                 f"&pvcalculation=1&outputformat=json")
+    # 1. Dados e PVGIS
+    res = requests.get(urls[p['perfil']])
+    df_cons = pd.read_csv(io.StringIO(res.text))
     
-    try:
-        pvgis_req = requests.get(pvgis_url)
-        pvgis_req.raise_for_status()
-        data = pvgis_req.json()
-        df_pv = pd.DataFrame(data['outputs']['hourly'])
-    except Exception as e:
-        st.error(f"Erro na API PVGIS: {e}")
-        return None, None
+    pvgis_url = (f"https://re.jrc.ec.europa.eu/api/v5_2/seriescalc?lat={p['lat']}&lon={p['lon']}"
+                 f"&peakpower={p['kwp']}&loss=14&angle={p['inclination']}&aspect={p['azimuth']-180}&outputformat=json")
+    df_pv = pd.DataFrame(requests.get(pvgis_url).json()['outputs']['hourly'])
     
-    # 3. Tratamento de Dados e Cálculo de Clipping
+    # 2. Tratamento Inicial
     df_pv['mes'] = df_pv['time'].str[4:6].astype(int)
     df_pv['dia'] = df_pv['time'].str[6:8].astype(int)
     df_pv['hora'] = df_pv['time'].str[9:11].astype(int)
-    
-    # Produção bruta vinda dos painéis (DC)
-    df_pv['producao_bruta_kwh'] = df_pv['P'] / 1000
-    
-    # Lógica de Clipping: Limitado pela potência AC do inversor
-    df_pv['producao_kwh'] = df_pv['producao_bruta_kwh'].clip(upper=p['p_ac'])
-    df_pv['clipping_kwh'] = (df_pv['producao_bruta_kwh'] - p['p_ac']).clip(lower=0)
-    
-    # Remover bissextos e calcular média horária para sincronismo com perfil ERSE
+    df_pv['prod_dc'] = df_pv['P'] / 1000
     df_pv = df_pv[~((df_pv['mes'] == 2) & (df_pv['dia'] == 29))]
-    df_pv_avg = df_pv.groupby(['mes', 'dia', 'hora'])[['producao_kwh', 'clipping_kwh', 'producao_bruta_kwh']].mean().reset_index()
-
-    # 4. Cruzamento de Simultaneidade (Produção AC vs Consumo)
-    df_merged = pd.merge(df_cons, df_pv_avg, on=['mes', 'dia', 'hora'])
-    df_merged['consumo_casa_kwh'] = df_merged['Peso_Horario_Mil'] * p['consumo_anual']
     
-    # Autoconsumo, Importação e Excedente
-    df_merged['autoconsumo_kwh'] = df_merged[['producao_kwh', 'consumo_casa_kwh']].min(axis=1)
-    df_merged['importacao_kwh'] = (df_merged['consumo_casa_kwh'] - df_merged['autoconsumo_kwh']).clip(lower=0)
-    df_merged['excedente_kwh'] = (df_merged['producao_kwh'] - df_merged['autoconsumo_kwh']).clip(lower=0)
+    df_merged = pd.merge(df_cons, df_pv, on=['mes', 'dia', 'hora'])
+    df_merged['cons_kwh'] = df_merged['Peso_Horario_Mil'] * p['consumo_anual']
 
-    # 5. Agregação Mensal para o Dashboard
-    resumo = df_merged.groupby('mes').agg({
-        'producao_kwh': 'sum',
-        'clipping_kwh': 'sum',
-        'producao_bruta_kwh': 'sum',
-        'consumo_casa_kwh': 'sum',
-        'autoconsumo_kwh': 'sum',
-        'importacao_kwh': 'sum',
-        'excedente_kwh': 'sum'
-    }).reset_index()
+    # 3. Simulação de Bateria (Iteração Horária)
+    soc = 0.0  # Estado de carga inicial (0 kWh)
+    cap_max = p['cap_bat']
+    list_auto, list_import, list_exced, list_soc = [], [], [], []
 
-    # Valorização Económica
-    resumo['valor_pago_rede'] = resumo['importacao_kwh'] * p['preco_compra']
-    resumo['valor_poupado'] = (resumo['autoconsumo_kwh'] * p['preco_compra']) + (resumo['excedente_kwh'] * p['preco_venda'])
-    
+    for _, row in df_merged.iterrows():
+        prod = min(row['prod_dc'], p['p_ac']) # Produção limitada pelo inversor
+        cons = row['cons_kwh']
+        
+        # Prioridade 1: Autoconsumo Direto
+        auto_dir = min(prod, cons)
+        net_energy = prod - cons
+        
+        if net_energy > 0: # Excesso: Carrega Bateria
+            can_charge = cap_max - soc
+            charge = min(net_energy, can_charge)
+            soc += charge
+            excedente = net_energy - charge
+            importacao = 0
+        else: # Défice: Descarrega Bateria
+            needed = abs(net_energy)
+            discharge = min(needed, soc)
+            soc -= discharge
+            importacao = needed - discharge
+            excedente = 0
+            
+        list_auto.append(auto_dir + (discharge if net_energy < 0 else 0))
+        list_import.append(importacao)
+        list_exced.append(excedente)
+        list_soc.append(soc)
+
+    df_merged['autoconsumo_kwh'] = list_auto
+    df_merged['importacao_kwh'] = list_import
+    df_merged['excedente_kwh'] = list_exced
+    df_merged['soc_kwh'] = list_soc
+
+    # 4. Agregação
+    resumo = df_merged.groupby('mes').agg({'prod_dc': 'sum', 'cons_kwh': 'sum', 'autoconsumo_kwh': 'sum', 
+                                           'importacao_kwh': 'sum', 'excedente_kwh': 'sum'}).reset_index()
     return resumo, df_merged
 
-# --- Inicialização da App ---
-st.set_page_config(page_title="PV Sim Azores Pro", layout="wide", page_icon="☀️")
-
-run_sim, params = render_sidebar()
-
-if run_sim:
-    with st.spinner("A processar matrizes energéticas e limites de inversão..."):
-        resumo_mensal, df_horario = executar_simulacao(params)
-        
-        if resumo_mensal is not None:
-            render_dashboard(resumo_mensal, df_horario)
-else:
-    st.info("Configure o sistema fotovoltaico na barra lateral para iniciar a análise.")
+st.set_page_config(page_title="Simulador SOLENERGE", layout="wide")
+run, params = render_sidebar()
+if run:
+    resumo, horario = executar_simulacao(params)
+    render_dashboard(resumo, horario, params)
