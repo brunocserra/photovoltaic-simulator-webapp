@@ -4,7 +4,6 @@ def render_sidebar():
     with st.sidebar:
         st.header("⚙️ Configuração Técnica")
         
-        # Conforme o relatório (Perfil A para indústria)
         perfil_tipo = st.selectbox("Perfil de Consumo (ERSE)", ["A", "B", "C"], index=0)
         
         st.subheader("🔌 Inversor e Bateria")
@@ -14,7 +13,6 @@ def render_sidebar():
         inv_choice = st.selectbox("Inversor Nominal (AC)", list(inversores_dict.keys()), index=5)
         p_ac_total = inversores_dict[inv_choice]
         
-        # Capacidade de Armazenamento [Ref: Relatório SOLENERGE 100 kWh]
         cap_bateria = st.number_input("Capacidade Bateria (kWh)", min_value=0.0, value=100.0, step=5.0)
         
         st.subheader("☀️ Painéis Fotovoltaicos")
@@ -25,10 +23,22 @@ def render_sidebar():
         racio = p_dc_total / p_ac_total 
         
         st.metric("Rácio DC/AC", f"{racio:.2f}")
-        # Recomendação técnica para Açores (Compensação de radiação difusa)
         if 1.3 <= racio <= 1.4:
             st.success("Rácio Otimizado para os Açores (1.3-1.4)")
+        elif racio > 1.5:
+            st.error("Rácio Crítico (>1.5)")
+
+        st.subheader("🧵 Configuração de Strings")
+        n_strings = st.number_input("Nº de Strings", min_value=1, value=1)
+        soma_paineis = 0
+        for i in range(n_strings):
+            val = st.number_input(f"Módulos na String {i+1}", min_value=1, value=n_modulos//n_strings)
+            soma_paineis += val
         
+        pode_simular = (soma_paineis == n_modulos) and (racio <= 1.5)
+        if not pode_simular and soma_paineis != n_modulos:
+            st.warning(f"Soma das strings ({soma_paineis}) ≠ Total ({n_modulos})")
+
         with st.expander("Geometria e Custos"):
             lat = st.number_input("Latitude", value=37.82) 
             lon = st.number_input("Longitude", value=-25.82)
@@ -38,7 +48,7 @@ def render_sidebar():
             preco_compra = st.number_input("Compra (€/kWh)", value=0.183)
             preco_venda = st.number_input("Venda (€/kWh)", value=0.04)
 
-        run_sim = st.button("🚀 Executar Simulação", type="primary", use_container_width=True)
+        run_sim = st.button("🚀 Executar Simulação", type="primary", use_container_width=True, disabled=not pode_simular)
         
         return run_sim, {
             "perfil": perfil_tipo, "lat": lat, "lon": lon, "kwp": p_dc_total,
